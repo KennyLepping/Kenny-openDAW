@@ -1,56 +1,123 @@
-import css from "./RegionLane.sass?inline"
-import {Html} from "@opendaw/lib-dom"
-import {Lifecycle} from "@opendaw/lib-std"
-import {createElement} from "@opendaw/lib-jsx"
-import {CanvasPainter} from "@/ui/canvas/painter.ts"
-import {renderRegions} from "@/ui/timeline/tracks/audio-unit/regions/RegionRenderer.ts"
-import {TrackBoxAdapter, TrackType} from "@opendaw/studio-adapters"
-import {TracksManager} from "@/ui/timeline/tracks/audio-unit/TracksManager.ts"
-import {TimelineRange} from "@opendaw/studio-core"
+import css from "./RegionLane.sass?inline";
+import { Html } from "@opendaw/lib-dom";
+import { Lifecycle } from "@opendaw/lib-std";
+import { createElement } from "@opendaw/lib-jsx";
+import { CanvasPainter } from "@/ui/canvas/painter.ts";
+import {
+  clearSwapHover,
+  isSwapHovered,
+  renderRegions,
+  updateSwapHover,
+} from "@/ui/timeline/tracks/audio-unit/regions/RegionRenderer.ts";
+import { TrackBoxAdapter, TrackType } from "@opendaw/studio-adapters";
+import { TracksManager } from "@/ui/timeline/tracks/audio-unit/TracksManager.ts";
+import { TimelineRange } from "@opendaw/studio-core";
 
-const className = Html.adoptStyleSheet(css, "RegionLane")
+const className = Html.adoptStyleSheet(css, "RegionLane");
 
 type Construct = {
-    lifecycle: Lifecycle
-    trackManager: TracksManager
-    range: TimelineRange
-    adapter: TrackBoxAdapter
-}
+  lifecycle: Lifecycle;
+  trackManager: TracksManager;
+  range: TimelineRange;
+  adapter: TrackBoxAdapter;
+};
 
-export const RegionLane = ({lifecycle, trackManager, range, adapter}: Construct) => {
-    if (adapter.type === TrackType.Undefined) {
-        return <div className={Html.buildClassList(className, "deactive")}/>
-    }
-    let updated = false
-    let visible = false
-    const canvas: HTMLCanvasElement = <canvas/>
-    const element: Element = (<div className={className}>{canvas}</div>)
-    const painter = lifecycle.own(new CanvasPainter(canvas, ({context}) => {
-        if (visible) {
-            renderRegions(context, trackManager, range, adapter.listIndex)
-            updated = true
-        }
-    }))
-    const requestUpdate = () => {
-        updated = false
-        painter.requestUpdate()
-    }
-    const {timelineFocus} = trackManager.service.project
-    lifecycle.ownAll(
-        range.subscribe(requestUpdate),
-        adapter.regions.subscribeChanges(requestUpdate),
-        adapter.enabled.subscribe(requestUpdate),
-        trackManager.service.project.timelineBoxAdapter.catchupAndSubscribeSignature(requestUpdate),
-        timelineFocus.track.catchupAndSubscribe(owner =>
-            element.classList.toggle("focused", owner.contains(adapter))),
-        Html.watchIntersection(element, entries => entries
-                .forEach(({isIntersecting}) => {
-                    visible = isIntersecting
-                    if (!updated) {
-                        painter.requestUpdate()
-                    }
-                }),
-            {root: trackManager.scrollableContainer})
-    )
-    return element
-}
+export const RegionLane = ({
+  lifecycle,
+  trackManager,
+  range,
+  adapter,
+}: Construct) => {
+  if (adapter.type === TrackType.Undefined) {
+    return <div className={Html.buildClassList(className, "deactive")} />;
+  }
+  let updated = false;
+  let visible = false;
+  const canvas: HTMLCanvasElement = <canvas />;
+  const element: Element = <div className={className}>{canvas}</div>;
+  const painter = lifecycle.own(
+    new CanvasPainter(canvas, ({ context }) => {
+      if (visible) {
+        renderRegions(context, trackManager, range, adapter.listIndex);
+        updated = true;
+      }
+    }),
+  );
+  const requestUpdate = () => {
+    updated = false;
+    painter.requestUpdate();
+  };
+  // use wrapper div instead of canvas
+  const hitTarget = element as HTMLElement;
+
+  const setCursor = (cursor: string) => {
+    hitTarget.style.cursor = cursor;
+    canvas.style.cursor = cursor;
+  };
+
+  const onMouseMove = (e: MouseEvent) => {
+    if (!visible) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * devicePixelRatio;
+    const y = (e.clientY - rect.top) * devicePixelRatio;
+
+    const changed = updateSwapHover(canvas, x, y);
+    setCursor(isSwapHovered(canvas) ? "pointer" : "default");
+
+    if (changed) requestUpdate();
+  };
+
+  const onMouseLeave = () => {
+    const changed = clearSwapHover(canvas);
+    setCursor("default");
+
+    if (changed) requestUpdate();
+  };
+
+  hitTarget.addEventListener("mousemove", onMouseMove);
+  hitTarget.addEventListener("mouseleave", onMouseLeave);
+
+  // ensure pointer events aren't blocked
+  canvas.style.pointerEvents = "auto";
+  hitTarget.style.pointerEvents = "auto";
+
+  lifecycle.own({
+    terminate: () => {
+      hitTarget.removeEventListener("mousemove", onMouseMove);
+      hitTarget.removeEventListener("mouseleave", onMouseLeave);
+    },
+  });
+  const { timelineFocus } = trackManager.service.project;
+  lifecycle.ownAll(
+    range.subscribe(requestUpdate),
+    adapter.regions.subscribeChanges(requestUpdate),
+    adapter.enabled.subscribe(requestUpdate),
+    trackManager.service.project.timelineBoxAdapter.catchupAndSubscribeSignature(
+      requestUpdate,
+    ),
+    timelineFocus.track.catchupAndSubscribe((owner) =>
+      element.classList.toggle("focused", owner.contains(adapter)),
+    ),
+    Html.watchIntersection(
+      element,
+      (entries) =>
+        entries.forEach(({ isIntersecting }) => {
+          visible = isIntersecting;
+
+          if (!visible) {
+            const changed = clearSwapHover(canvas);
+            canvas.style.cursor = "default";
+            if (changed) requestUpdate();
+            return;
+          }
+
+          if (!updated) {
+            painter.requestUpdate();
+          }
+        }),
+      { root: trackManager.scrollableContainer },
+    ),
+  );
+  return element;
+};

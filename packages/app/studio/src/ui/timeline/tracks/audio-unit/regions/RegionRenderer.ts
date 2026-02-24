@@ -22,6 +22,23 @@ import { RegionPaintBucket } from "@/ui/timeline/tracks/audio-unit/regions/Regio
 import { RegionLabel } from "@/ui/timeline/RegionLabel";
 
 const SWAP_BTN_SIZE = 12;
+type SwapRect = { key: string; x: number; y: number; w: number; h: number };
+
+type SwapState = {
+  rects: SwapRect[];
+  hoveredKey: string | null;
+};
+
+const swapStateByCanvas = new WeakMap<HTMLCanvasElement, SwapState>();
+
+function getSwapState(canvas: HTMLCanvasElement): SwapState {
+  let s = swapStateByCanvas.get(canvas);
+  if (!s) {
+    s = { rects: [], hoveredKey: null };
+    swapStateByCanvas.set(canvas, s);
+  }
+  return s;
+}
 
 function roundRectPath(
   ctx: CanvasRenderingContext2D,
@@ -50,10 +67,11 @@ function drawSwapButton(
   x: number,
   y: number,
   size: number,
+  hovered?: boolean,
 ) {
   ctx.save();
   // background
-  ctx.globalAlpha = 0.22;
+  ctx.globalAlpha = hovered ? 0.4 : 0.22;
   roundRectPath(ctx, x, y, size, size, 3);
   ctx.fill();
   // icon
@@ -86,7 +104,8 @@ export const renderRegions = (
   range: TimelineRange,
   index: int,
 ): void => {
-  const canvas = context.canvas;
+  const canvas = context.canvas as HTMLCanvasElement;
+  const state = getSwapState(canvas);
   const { width, height } = canvas;
   const { fontFamily } = getComputedStyle(canvas);
 
@@ -100,6 +119,7 @@ export const renderRegions = (
   const bound: RegionBound = { top: labelHeight + 1.0, bottom: height - 2.5 };
 
   context.clearRect(0, 0, width, height);
+  state.rects.length = 0;
   context.textBaseline = "middle";
   context.font = `${fontSize}px ${fontFamily}`;
 
@@ -182,8 +202,10 @@ export const renderRegions = (
         visitNoteRegionBoxAdapter: () => {},
         visitValueRegionBoxAdapter: () => {},
         visitAudioRegionBoxAdapter: (ar: AudioRegionBoxAdapter) => {
-          const isAudioFileWave = ar.type === "audio-region" && ar.file != null;
-          if (!isAudioFileWave) return;
+          // inside visitAudioRegionBoxAdapter, replace the rect + hover drawing bits with this:
+
+          const swapText = "GEN";
+          const swapTextWidth = context.measureText(swapText).width;
 
           const btnX = x0Int + 3 * dpr;
           const btnY = 1 + (labelHeight - SWAP_BTN_SIZE) / 2;
@@ -193,20 +215,45 @@ export const renderRegions = (
           context.fillStyle = labelColor;
           context.strokeStyle = labelColor;
 
-          drawSwapButton(context, btnX, btnY, SWAP_BTN_SIZE);
+          const key = ar.uuid;
 
-          const swapText = "GEN";
+          // text start + divider (this is the vertical bar to the right of GEN)
           const swapTextX = btnX + SWAP_BTN_SIZE + 4 * dpr;
+          const dividerX = swapTextX + swapTextWidth + 4 * dpr;
+          const dividerRightX = dividerX + dpr; // include the divider line thickness
+
+          // 1) HIT AREA: only cover the button + "GEN" + divider (so it won't mess with dragging elsewhere)
+          const hitRect: SwapRect = {
+            key,
+            x: btnX,
+            y: btnY,
+            w: dividerRightX - btnX,
+            h: SWAP_BTN_SIZE,
+          };
+          state.rects.push(hitRect);
+
+          const isHovered = state.hoveredKey === key;
+
+          // 2) HOVER DRAW: fill from LEFT EDGE OF THIS REGION to the divider (what you want visually)
+          if (isHovered) {
+            context.save();
+            context.globalAlpha = 0.18; // tweak to taste
+            context.fillStyle = labelColor; // or labelBackground, depending on look you want
+            context.fillRect(x0Int, 0, dividerRightX - x0Int, labelHeight);
+            context.restore();
+          }
+
+          // draw icon + GEN + divider on top
+          drawSwapButton(context, btnX, btnY, SWAP_BTN_SIZE, isHovered);
+
           context.fillText(swapText, swapTextX, 1 + labelHeight / 2);
 
-          const swapTextWidth = context.measureText(swapText).width;
-          const dividerX = swapTextX + swapTextWidth + 4 * dpr;
-
+          context.save();
           context.globalAlpha = 0.4;
           context.fillRect(dividerX, 2 * dpr, dpr, labelHeight - 4 * dpr);
-          context.globalAlpha = 1;
+          context.restore();
 
-          audioLabelStartX = dividerX + 6 * dpr;
+          audioLabelStartX = dividerRightX + 5 * dpr;
 
           context.fillStyle = prevFill;
           context.strokeStyle = prevStroke;
@@ -382,3 +429,34 @@ export const renderRegions = (
   );
   renderRegions(strategy.selectedModifyStrategy(), false, false);
 };
+
+export function updateSwapHover(
+  canvas: HTMLCanvasElement,
+  x: number,
+  y: number,
+): boolean {
+  const state = getSwapState(canvas);
+
+  let nextKey: string | null = null;
+  for (const r of state.rects) {
+    if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+      nextKey = r.key;
+      break;
+    }
+  }
+
+  const changed = nextKey !== state.hoveredKey;
+  state.hoveredKey = nextKey;
+  return changed;
+}
+
+export function clearSwapHover(canvas: HTMLCanvasElement): boolean {
+  const state = getSwapState(canvas);
+  const changed = state.hoveredKey !== null;
+  state.hoveredKey = null;
+  return changed;
+}
+
+export function isSwapHovered(canvas: HTMLCanvasElement): boolean {
+  return getSwapState(canvas).hoveredKey !== null;
+}

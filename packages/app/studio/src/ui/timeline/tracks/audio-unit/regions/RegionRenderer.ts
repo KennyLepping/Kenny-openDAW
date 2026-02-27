@@ -27,17 +27,61 @@ type SwapRect = { key: string; x: number; y: number; w: number; h: number };
 type SwapState = {
   rects: SwapRect[];
   hoveredKey: string | null;
+  mouseX: number;
+  mouseY: number;
+  hasMouse: boolean;
 };
-
 const swapStateByCanvas = new WeakMap<HTMLCanvasElement, SwapState>();
+(window as any).__swapState = swapStateByCanvas;
 
 function getSwapState(canvas: HTMLCanvasElement): SwapState {
   let s = swapStateByCanvas.get(canvas);
   if (!s) {
-    s = { rects: [], hoveredKey: null };
+    s = { rects: [], hoveredKey: null, mouseX: 0, mouseY: 0, hasMouse: false };
     swapStateByCanvas.set(canvas, s);
   }
   return s;
+}
+
+function pointInRect(r: SwapRect, x: number, y: number): boolean {
+  return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+}
+
+// NEW: called by RegionLane on mousemove
+export function setSwapMousePos(
+  canvas: HTMLCanvasElement,
+  x: number,
+  y: number,
+): void {
+  const s = getSwapState(canvas);
+  s.mouseX = x;
+  s.mouseY = y;
+  s.hasMouse = true;
+}
+
+export function clearSwapMousePos(canvas: HTMLCanvasElement): void {
+  const s = getSwapState(canvas);
+  s.hasMouse = false;
+  s.hoveredKey = null;
+}
+
+export function isSwapHovered(canvas: HTMLCanvasElement): boolean {
+  return getSwapState(canvas).hoveredKey !== null;
+}
+
+export function debugSwapRects(canvas: HTMLCanvasElement): { count: number } {
+  const s = getSwapState(canvas);
+  return { count: s.rects.length };
+}
+
+export function hitTestGen(canvas: HTMLCanvasElement, x: number, y: number): string | null {
+  const s = getSwapState(canvas);
+  for (const r of s.rects) {
+    if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+      return r.key;
+    }
+  }
+  return null;
 }
 
 function roundRectPath(
@@ -70,11 +114,11 @@ function drawSwapButton(
   hovered?: boolean,
 ) {
   ctx.save();
-  // background
+
   ctx.globalAlpha = hovered ? 0.4 : 0.22;
   roundRectPath(ctx, x, y, size, size, 3);
   ctx.fill();
-  // icon
+
   ctx.globalAlpha = 0.9;
   ctx.lineWidth = 1.2;
 
@@ -88,6 +132,7 @@ function drawSwapButton(
 
   const ax = cx + Math.cos(Math.PI * 0.2) * r;
   const ay = cy + Math.sin(Math.PI * 0.2) * r;
+
   ctx.beginPath();
   ctx.moveTo(ax, ay);
   ctx.lineTo(ax - 3, ay + 1);
@@ -106,6 +151,7 @@ export const renderRegions = (
 ): void => {
   const canvas = context.canvas as HTMLCanvasElement;
   const state = getSwapState(canvas);
+
   const { width, height } = canvas;
   const { fontFamily } = getComputedStyle(canvas);
 
@@ -114,6 +160,7 @@ export const renderRegions = (
   const unitMax = range.unitMax;
 
   const dpr = devicePixelRatio;
+  const btnSize = SWAP_BTN_SIZE * dpr; // ✅ DPR-scaled size
   const fontSize = RegionLabel.fontSize() * dpr;
   const labelHeight = RegionLabel.labelHeight() * dpr;
   const bound: RegionBound = { top: labelHeight + 1.0, bottom: height - 2.5 };
@@ -122,6 +169,7 @@ export const renderRegions = (
   state.rects.length = 0;
   context.textBaseline = "middle";
   context.font = `${fontSize}px ${fontFamily}`;
+  let hoveredKeyThisFrame: string | null = null;
 
   const grid = true;
   if (grid) {
@@ -139,7 +187,7 @@ export const renderRegions = (
       { minLength: 32 },
     );
   }
-  const renderRegions = (
+  const renderRegionsInner = (
     strategy: RegionModifyStrategy,
     filterSelected: boolean,
     hideSelected: boolean,
@@ -202,13 +250,11 @@ export const renderRegions = (
         visitNoteRegionBoxAdapter: () => {},
         visitValueRegionBoxAdapter: () => {},
         visitAudioRegionBoxAdapter: (ar: AudioRegionBoxAdapter) => {
-          // inside visitAudioRegionBoxAdapter, replace the rect + hover drawing bits with this:
-
           const swapText = "GEN";
           const swapTextWidth = context.measureText(swapText).width;
 
           const btnX = x0Int + 3 * dpr;
-          const btnY = 1 + (labelHeight - SWAP_BTN_SIZE) / 2;
+          const btnY = 1 * dpr + (labelHeight - btnSize) / 2;
 
           const prevFill = context.fillStyle;
           const prevStroke = context.strokeStyle;
@@ -217,36 +263,40 @@ export const renderRegions = (
 
           const key = ar.uuid;
 
-          // text start + divider (this is the vertical bar to the right of GEN)
-          const swapTextX = btnX + SWAP_BTN_SIZE + 4 * dpr;
+          const swapTextX = btnX + btnSize + 4 * dpr;
           const dividerX = swapTextX + swapTextWidth + 4 * dpr;
-          const dividerRightX = dividerX + dpr; // include the divider line thickness
+          const dividerRightX = dividerX + dpr;
 
-          // 1) HIT AREA: only cover the button + "GEN" + divider (so it won't mess with dragging elsewhere)
           const hitRect: SwapRect = {
             key,
             x: btnX,
-            y: btnY,
+            y: 0,
             w: dividerRightX - btnX,
-            h: SWAP_BTN_SIZE,
+            h: labelHeight,
           };
           state.rects.push(hitRect);
 
-          const isHovered = state.hoveredKey === key;
+          // ✅ decide hover immediately (first match wins)
+          if (
+            hoveredKeyThisFrame === null &&
+            state.hasMouse &&
+            pointInRect(hitRect, state.mouseX, state.mouseY)
+          ) {
+            hoveredKeyThisFrame = key;
+          }
 
-          // 2) HOVER DRAW: fill from LEFT EDGE OF THIS REGION to the divider (what you want visually)
+          const isHovered = hoveredKeyThisFrame === key;
+
           if (isHovered) {
             context.save();
-            context.globalAlpha = 0.18; // tweak to taste
-            context.fillStyle = labelColor; // or labelBackground, depending on look you want
+            context.globalAlpha = 0.18;
+            context.fillStyle = labelColor;
             context.fillRect(x0Int, 0, dividerRightX - x0Int, labelHeight);
             context.restore();
           }
 
-          // draw icon + GEN + divider on top
-          drawSwapButton(context, btnX, btnY, SWAP_BTN_SIZE, isHovered);
-
-          context.fillText(swapText, swapTextX, 1 + labelHeight / 2);
+          drawSwapButton(context, btnX, btnY, btnSize, isHovered);
+          context.fillText(swapText, swapTextX, 1 * dpr + labelHeight / 2);
 
           context.save();
           context.globalAlpha = 0.4;
@@ -422,41 +472,13 @@ export const renderRegions = (
   const modifier: Option<RegionModifyStrategies> = tracks.currentRegionModifier;
   const strategy = modifier.unwrapOrElse(RegionModifyStrategies.Identity);
 
-  renderRegions(
+  renderRegionsInner(
     strategy.unselectedModifyStrategy(),
     true,
     !strategy.showOrigin(),
   );
-  renderRegions(strategy.selectedModifyStrategy(), false, false);
+  renderRegionsInner(strategy.selectedModifyStrategy(), false, false);
+
+  // ✅ commit hover result for everyone else to read (cursor, clicks, etc.)
+  state.hoveredKey = state.hasMouse ? hoveredKeyThisFrame : null;
 };
-
-export function updateSwapHover(
-  canvas: HTMLCanvasElement,
-  x: number,
-  y: number,
-): boolean {
-  const state = getSwapState(canvas);
-
-  let nextKey: string | null = null;
-  for (const r of state.rects) {
-    if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
-      nextKey = r.key;
-      break;
-    }
-  }
-
-  const changed = nextKey !== state.hoveredKey;
-  state.hoveredKey = nextKey;
-  return changed;
-}
-
-export function clearSwapHover(canvas: HTMLCanvasElement): boolean {
-  const state = getSwapState(canvas);
-  const changed = state.hoveredKey !== null;
-  state.hoveredKey = null;
-  return changed;
-}
-
-export function isSwapHovered(canvas: HTMLCanvasElement): boolean {
-  return getSwapState(canvas).hoveredKey !== null;
-}

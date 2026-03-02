@@ -111,7 +111,7 @@ export const RegionLane = ({
         // Important: prevent the DAW drag handlers from stealing the click when GEN is hit.
         e.preventDefault();
         e.stopPropagation();
-        console.log("GEN pressed on region:", key);
+        console.log("GEN pressed in pointerdown 2 on region:", key);
       }
     }),
   );
@@ -131,14 +131,14 @@ export const RegionLane = ({
         requestAnimationFrame(() => {
           const key = hitTestGen(canvas, x, y);
           console.log("retry hitTestGen ->", key);
-          if (key) console.log("GEN pressed on region:", key);
+          if (key) console.log("GEN pressed in subDown on region:", key);
         });
         return;
       }
 
       const key = hitTestGen(canvas, x, y);
       console.log("hitTestGen ->", key);
-      if (key) console.log("GEN pressed on region:", key);
+      if (key) console.log("GEN pressed in subDown on region:", key);
     }),
   );
 
@@ -195,7 +195,7 @@ export const RegionLane = ({
 
     for (const r of state.rects) {
       if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
-        console.log("GEN pressed on region:", r.key);
+        console.log("GEN pressed in pointerdown on region:", r.key);
         // THIS is where GEN logic goes
         break;
       }

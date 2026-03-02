@@ -29,6 +29,7 @@ import { CursorEvent, installCursor } from "@/ui/hooks/cursor.ts";
 import {
   genSwapRegionAudio,
   setGenSamplePool,
+  setGenFolderPrefix,
 } from "@/ui/timeline/tracks/audio-unit/GenSwap";
 import { RegionStartModifier } from "@/ui/timeline/tracks/audio-unit/regions/RegionStartModifier.ts";
 import { RegionDurationModifier } from "@/ui/timeline/tracks/audio-unit/regions/RegionDurationModifier.ts";
@@ -117,20 +118,51 @@ export const RegionsArea = ({
     [];
   setGenSamplePool(files);
 
-  // In pointerdown:
+  const getAllAudioFiles = () =>
+    (project as any).rootBoxAdapter?.audioFiles?.collection?.asArray?.() ??
+    (project as any).rootBoxAdapter?.audioFiles?.asArray?.() ??
+    (project as any).audioFiles?.collection?.asArray?.() ??
+    [];
+
+  // 3) Keep the pool in sync (so imports later also work)
+  const refreshGenPool = () => setGenSamplePool(getAllAudioFiles());
+  refreshGenPool();
+  setGenFolderPrefix("polarity fatso"); // whatever substring should match your sample paths/names
+
+  // If audioFiles is observable in your version, keep it synced:
+  (project as any).rootBoxAdapter?.audioFiles?.subscribeChanges?.(
+    refreshGenPool,
+  );
+  (project as any).rootBoxAdapter?.audioFiles?.collection?.subscribeChanges?.(
+    refreshGenPool,
+  );
+
+  // 4) In the ONE pointerdown handler you keep:
   Events.subscribe(element, "pointerdown", (event: PointerEvent) => {
     const target = capturing.captureEvent(event);
+    console.log("pointerdown capture:", target);
 
-    // GEN button behavior: do NOT block normal selection.
-    // If you previously had stopPropagation here, remove it.
     if (target?.type === "region" && target.part === "gen") {
-      event.preventDefault(); // optional: prevents text selection / double-click weirdness
-      // do NOT event.stopPropagation()
-      genSwapRegionAudio(target.region, project.editing);
+      event.preventDefault();
+
+      // Keep selection behavior (so region highlights like normal)
+      timelineFocus.clear();
+      timelineFocus.focusRegion(target.region);
+
+      // Do the swap using the real editing object
+      genSwapRegionAudio(target.region as any, project.editing);
       return;
     }
 
-    // keep your existing pointerdown logic below...
+    // existing selection logic...
+    timelineFocus.clear();
+    if (target === null) return;
+
+    if (target.type === "region") {
+      timelineFocus.focusRegion(target.region);
+    } else if (target.type === "track") {
+      timelineFocus.focusTrack(target.track.trackBoxAdapter);
+    }
   });
   const capturing: ElementCapturing<RegionCaptureTarget> =
     RegionCapturing.create(element, manager, range);
@@ -209,7 +241,10 @@ export const RegionsArea = ({
       if (target?.type === "region" && target.part === "gen") {
         event.preventDefault();
         event.stopPropagation();
-        console.log("GEN pressed for region:", target.region.uuid);
+        console.log(
+          "GEN pressed in RegionsArea for region:",
+          target.region.uuid,
+        );
         return;
       }
 

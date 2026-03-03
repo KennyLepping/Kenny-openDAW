@@ -1,0 +1,14 @@
+{
+  "pool": [
+    "/gen-samples/edm-snares/samplegen_1_electronic_snare.wav",
+    "/gen-samples/edm-snares/samplegen_2_electronic_snare.wav",
+    "/gen-samples/edm-snares/samplegen_3_electronic_snare.wav",
+    "/gen-samples/edm-snares/samplegen_4_electronic_snare.wav",
+    "/gen-samples/edm-snares/samplegen_5_electronic_snare.wav",
+    "/gen-samples/edm-snares/samplegen_6_electronic_snare.wav",
+    "/gen-samples/edm-snares/samplegen_7_electronic_snare.wav",
+    "/gen-samples/edm-snares/samplegen_8_electronic_snare.wav",
+    "/gen-samples/edm-snares/samplegen_9_electronic_snare.wav",
+    "/gen-samples/edm-snares/samplegen_10_electronic_snare.wav"
+  ]
+}

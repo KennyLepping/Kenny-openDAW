@@ -28,7 +28,8 @@ import { Cursor } from "@/ui/Cursors.ts";
 import { CursorEvent, installCursor } from "@/ui/hooks/cursor.ts";
 import {
   genSwapRegionAudio,
-  setGenSamplePool,
+  refreshGenPoolFromRegions,
+  getGenSamplePool,
   setGenFolderPrefix,
 } from "@/ui/timeline/tracks/audio-unit/GenSwap";
 import { RegionStartModifier } from "@/ui/timeline/tracks/audio-unit/regions/RegionStartModifier.ts";
@@ -90,6 +91,7 @@ export const RegionsArea = ({
   range,
 }: Construct) => {
   const { project, timeline } = service;
+  (globalThis as any).__project = project;
   const { snapping } = timeline;
   const {
     selection,
@@ -99,9 +101,11 @@ export const RegionsArea = ({
     timelineBox,
     userEditingManager,
   } = project;
+
   const markerPosition = lifecycle.own(
     new DefaultObservableValue<Nullable<ppqn>>(null),
   );
+
   const element: HTMLElement = (
     <div className={className} tabIndex={-1} data-scope="regions">
       <CutCursor
@@ -111,61 +115,11 @@ export const RegionsArea = ({
       />
     </div>
   );
-  // Replace this with the real list of imported audio files in your project.
-  const files =
-    (project as any).rootBoxAdapter?.audioFiles?.collection?.asArray?.() ??
-    (project as any).audioFiles?.collection?.asArray?.() ??
-    [];
-  setGenSamplePool(files);
 
-  const getAllAudioFiles = () =>
-    (project as any).rootBoxAdapter?.audioFiles?.collection?.asArray?.() ??
-    (project as any).rootBoxAdapter?.audioFiles?.asArray?.() ??
-    (project as any).audioFiles?.collection?.asArray?.() ??
-    [];
-
-  // 3) Keep the pool in sync (so imports later also work)
-  const refreshGenPool = () => setGenSamplePool(getAllAudioFiles());
-  refreshGenPool();
-  setGenFolderPrefix("polarity fatso"); // whatever substring should match your sample paths/names
-
-  // If audioFiles is observable in your version, keep it synced:
-  (project as any).rootBoxAdapter?.audioFiles?.subscribeChanges?.(
-    refreshGenPool,
-  );
-  (project as any).rootBoxAdapter?.audioFiles?.collection?.subscribeChanges?.(
-    refreshGenPool,
-  );
-
-  // 4) In the ONE pointerdown handler you keep:
-  Events.subscribe(element, "pointerdown", (event: PointerEvent) => {
-    const target = capturing.captureEvent(event);
-    console.log("pointerdown capture:", target);
-
-    if (target?.type === "region" && target.part === "gen") {
-      event.preventDefault();
-
-      // Keep selection behavior (so region highlights like normal)
-      timelineFocus.clear();
-      timelineFocus.focusRegion(target.region);
-
-      // Do the swap using the real editing object
-      genSwapRegionAudio(target.region as any, project.editing);
-      return;
-    }
-
-    // existing selection logic...
-    timelineFocus.clear();
-    if (target === null) return;
-
-    if (target.type === "region") {
-      timelineFocus.focusRegion(target.region);
-    } else if (target.type === "track") {
-      timelineFocus.focusTrack(target.track.trackBoxAdapter);
-    }
-  });
+  // Create capturing before we use it in pointerdown
   const capturing: ElementCapturing<RegionCaptureTarget> =
     RegionCapturing.create(element, manager, range);
+
   const regionLocator = createRegionLocator(manager, range, regionSelection);
   const dragAndDrop = new RegionDragAndDrop(
     service,
@@ -174,6 +128,51 @@ export const RegionsArea = ({
   );
   const shortcuts = ShortcutManager.get().createContext(element, "Regions");
   const { engine, boxGraph, overlapResolver, timelineFocus } = project;
+
+  // optional: only include your generated snares
+  setGenFolderPrefix("/gen-samples/edm-snares/");
+  // at init
+
+  refreshGenPoolFromRegions(manager);
+
+  lifecycle.own(
+    editing.subscribe?.(() => refreshGenPoolFromRegions(manager)) ?? {
+      release() {},
+    },
+  );
+
+  lifecycle.own(
+    Events.subscribe(element, "pointerdown", (event: PointerEvent) => {
+      const target = capturing.captureEvent(event);
+
+      if (target?.type === "region") {
+        (globalThis as any).__lastRegion = target.region;
+        (globalThis as any).__lastRegionFilePtr = (
+          target.region as any
+        ).box?.file; // PointerField
+        (globalThis as any).__lastRegionFileAdapter = (
+          target.region as any
+        ).file; // AudioFileBoxAdapter
+      }
+
+      if (target?.type === "region" && target.part === "gen") {
+        event.preventDefault();
+
+        refreshGenPoolFromRegions(manager);
+        const pool = getGenSamplePool();
+
+        genSwapRegionAudio(target.region as any, editing, pool);
+      }
+
+      timelineFocus.clear();
+      if (target === null) return;
+
+      if (target.type === "region") timelineFocus.focusRegion(target.region);
+      else if (target.type === "track")
+        timelineFocus.focusTrack(target.track.trackBoxAdapter);
+    }),
+  );
+
   const clipboardHandler = RegionsClipboard.createHandler({
     getEnabled: () => !engine.isPlaying.getValue(),
     getPosition: () => engine.position.getValue(),
@@ -195,6 +194,7 @@ export const RegionsArea = ({
     }),
     shortcuts,
     ClipboardManager.install(element, clipboardHandler),
+
     shortcuts.register(RegionsShortcuts["select-all"].shortcut, () => {
       regionSelection.select(
         ...manager
@@ -233,37 +233,6 @@ export const RegionsArea = ({
       selection: regionSelection,
       range,
     }),
-    Events.subscribe(element, "pointerdown", (event: PointerEvent) => {
-      const target = capturing.captureEvent(event);
-      // TEMP DEBUG: proves what the hit-test thinks you clicked
-      console.log("pointerdown capture:", target);
-
-      if (target?.type === "region" && target.part === "gen") {
-        event.preventDefault();
-        event.stopPropagation();
-        console.log(
-          "GEN pressed in RegionsArea for region:",
-          target.region.uuid,
-        );
-        return;
-      }
-
-      timelineFocus.clear();
-      if (target === null) return;
-
-      if (target.type === "region") {
-        timelineFocus.focusRegion(target.region);
-      } else if (target.type === "track") {
-        timelineFocus.focusTrack(target.track.trackBoxAdapter);
-      }
-      // timelineFocus.clear()
-      // if (target === null) {return}
-      // if (target.type === "region") {
-      //     timelineFocus.focusRegion(target.region)
-      // } else if (target.type === "track") {
-      //     timelineFocus.focusTrack(target.track.trackBoxAdapter)
-      // }
-    }),
     Events.subscribeDblDwn(element, (event) => {
       const target = capturing.captureEvent(event);
       if (target === null) {
@@ -299,45 +268,8 @@ export const RegionsArea = ({
         );
       }
     }),
-    Dragging.attach(element, (event: PointerEvent) => {
-      const target = capturing.captureEvent(event);
-      if (target?.type === "region" && target.part === "gen") {
-        return Option.wrap({ update: EmptyExec });
-      }
-      if (target === null) {
-        if (Keyboard.isControlKey(event)) {
-          const trackIndex = manager.globalToIndex(event.clientY);
-          if (trackIndex === manager.numTracks()) {
-            return Option.None;
-          }
-          return Option.wrap({
-            update: EmptyExec, // TODO Create Region
-          });
-        } else {
-          return Option.None;
-        }
-      } else if (target.type === "region" && event.altKey) {
-        if (!regionSelection.isSelected(target.region)) {
-          regionSelection.deselectAll();
-          regionSelection.select(target.region);
-        }
-        const clientRect = element.getBoundingClientRect();
-        const pointerPulse = snapping.xToUnitRound(
-          event.clientX - clientRect.left,
-        );
-        editing.modify(() =>
-          regionSelection
-            .selected()
-            .slice()
-            .forEach((region) =>
-              RegionEditing.cut(region, pointerPulse, !event.shiftKey),
-            ),
-        );
-        return Option.wrap({ update: EmptyExec }); // prevent selection or tools
-      }
-      return Option.None;
-    }),
   );
+
   element.appendChild(
     <SelectionRectangle
       target={element}
@@ -451,20 +383,29 @@ export const RegionsArea = ({
       },
       leave: () => markerPosition.setValue(null),
     }),
+    // RegionsArea.tsx
+    // FIX: Do NOT call genSwapRegionAudio() inside Dragging.attach().
+    // Dragging.attach must ONLY return Option<Dragging.Process>. If you run GEN logic there,
+    // the switch() falls through to default -> Unhandled(target) and you get the crash.
+
     Dragging.attach(
       element,
       (event: PointerEvent) => {
-        const target: Nullable<RegionCaptureTarget> =
-          capturing.captureEvent(event);
+        // If the pointerdown started on GEN, swallow the drag start.
+        // IMPORTANT: return early. Do NOT run GEN swap here.
+        const target = capturing.captureEvent(event);
         if (target?.type === "region" && target.part === "gen") {
           return Option.wrap({ update: EmptyExec });
         }
+
         if (target === null || target.type !== "region") {
           return Option.None;
         }
+
         const clientRect = element.getBoundingClientRect();
         const pointerPulse = range.xToUnit(event.clientX - clientRect.left);
         const reference = target.region;
+
         switch (target.part) {
           case "start":
             return manager.startRegionModifier(
@@ -486,7 +427,7 @@ export const RegionsArea = ({
                 bounds: [reference.position, reference.complete],
               }),
             );
-          case "position":
+          case "position": {
             const pointerIndex = manager.globalToIndex(event.clientY);
             return manager.startRegionModifier(
               RegionMoveModifier.create(manager, regionSelection, {
@@ -497,6 +438,7 @@ export const RegionsArea = ({
                 reference,
               }),
             );
+          }
           case "content-start":
             return manager.startRegionModifier(
               RegionContentStartModifier.create(regionSelection.selected(), {
@@ -524,12 +466,14 @@ export const RegionsArea = ({
             const audioRegion = target.region;
             const isFadeIn = target.part === "fading-in";
             const { position, duration, complete, fading } = audioRegion;
+
             if (event.shiftKey) {
               const slopeField = isFadeIn
                 ? fading.inSlopeField
                 : fading.outSlopeField;
               const originalSlope = slopeField.getValue();
               const startY = event.clientY;
+
               return Option.wrap({
                 update: (dragEvent: Dragging.Event) => {
                   const deltaY = startY - dragEvent.clientY;
@@ -545,8 +489,10 @@ export const RegionsArea = ({
                   editing.modify(() => slopeField.setValue(originalSlope)),
               } satisfies Dragging.Process);
             }
+
             const originalFadeIn = fading.in;
             const originalFadeOut = fading.out;
+
             return Option.wrap({
               update: (dragEvent: Dragging.Event) => {
                 const pointerPpqn = range.xToUnit(
@@ -584,9 +530,8 @@ export const RegionsArea = ({
                 }),
             } satisfies Dragging.Process);
           }
-          default: {
+          default:
             return Unhandled(target);
-          }
         }
       },
       { permanentUpdates: true },

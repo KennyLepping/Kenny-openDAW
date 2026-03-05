@@ -27,10 +27,8 @@ import { SelectionRectangle } from "@/ui/timeline/SelectionRectangle.tsx";
 import { Cursor } from "@/ui/Cursors.ts";
 import { CursorEvent, installCursor } from "@/ui/hooks/cursor.ts";
 import {
-  genSwapRegionAudio,
+  genReplaceRegionWithNextSample,
   refreshGenPoolFromRegions,
-  getGenSamplePool,
-  setGenFolderPrefix,
 } from "@/ui/timeline/tracks/audio-unit/GenSwap";
 import { RegionStartModifier } from "@/ui/timeline/tracks/audio-unit/regions/RegionStartModifier.ts";
 import { RegionDurationModifier } from "@/ui/timeline/tracks/audio-unit/regions/RegionDurationModifier.ts";
@@ -129,11 +127,12 @@ export const RegionsArea = ({
   const shortcuts = ShortcutManager.get().createContext(element, "Regions");
   const { engine, boxGraph, overlapResolver, timelineFocus } = project;
 
-  // optional: only include your generated snares
-  setGenFolderPrefix("/gen-samples/edm-snares/");
-  // at init
+  //   setGenFolderPrefix(null);
 
   refreshGenPoolFromRegions(manager);
+  (globalThis as any).refreshGenPoolFromRegions = () =>
+    refreshGenPoolFromRegions(manager);
+  (globalThis as any).__tracksManager = manager;
 
   lifecycle.own(
     editing.subscribe?.(() => refreshGenPoolFromRegions(manager)) ?? {
@@ -141,35 +140,31 @@ export const RegionsArea = ({
     },
   );
 
+  //   setGenFilterMode({ kind: "nameStartsWith", prefix: "samplegen_" });
+
   lifecycle.own(
     Events.subscribe(element, "pointerdown", (event: PointerEvent) => {
       const target = capturing.captureEvent(event);
 
       if (target?.type === "region") {
         (globalThis as any).__lastRegion = target.region;
-        (globalThis as any).__lastRegionFilePtr = (
-          target.region as any
-        ).box?.file; // PointerField
-        (globalThis as any).__lastRegionFileAdapter = (
-          target.region as any
-        ).file; // AudioFileBoxAdapter
       }
 
       if (target?.type === "region" && target.part === "gen") {
         event.preventDefault();
 
         refreshGenPoolFromRegions(manager);
-        const pool = getGenSamplePool();
 
-        genSwapRegionAudio(target.region as any, editing, pool);
+        genReplaceRegionWithNextSample(
+          target.region as any,
+          manager,
+          project,
+          editing,
+          regionSelection, // optional but nice
+        );
+
+        return;
       }
-
-      timelineFocus.clear();
-      if (target === null) return;
-
-      if (target.type === "region") timelineFocus.focusRegion(target.region);
-      else if (target.type === "track")
-        timelineFocus.focusTrack(target.track.trackBoxAdapter);
     }),
   );
 
